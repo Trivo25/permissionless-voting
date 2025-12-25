@@ -3,16 +3,27 @@ pragma solidity ^0.8.20;
 import {Test, console2} from "forge-std/Test.sol";
 import {Voting} from "../src/Voting.sol";
 import "openzeppelin/contracts/utils/Strings.sol";
+import {RiscZeroMockVerifier} from "risc0/test/RiscZeroMockVerifier.sol";
+import {Receipt as RiscZeroReceipt} from "risc0/IRiscZeroVerifier.sol";
+import {ImageID} from "../src/ImageID.sol";
+
+struct VotePublicOutput {
+    uint256 proposalId;
+    bytes32 commitmentsDigest;
+    uint32 yes;
+    uint32 no;
+}
 
 contract VotingTester is Test {
     Voting public voting;
-
+    RiscZeroMockVerifier public verifier;
     address alice = makeAddr("alice");
     address bob = makeAddr("bob");
     address florian = makeAddr("florian");
 
     function setUp() public {
-        voting = new Voting();
+        verifier = new RiscZeroMockVerifier(0);
+        voting = new Voting(verifier);
         assertEq(voting.proposalCount(), 0);
     }
 
@@ -39,7 +50,7 @@ contract VotingTester is Test {
         assertEq(creator, address(florian));
         assertEq(pid, uint32(proposalId));
         assertEq(commitDeadline, deadline);
-        assertEq(commitmentsDigest, keccak256(abi.encode("proposal", block.chainid, address(voting), proposalId)));
+        assertEq(commitmentsDigest, keccak256(abi.encode(proposalId)));
         assertEq(tallied, false);
         assertEq(yesCount, 0);
         assertEq(noCount, 0);
@@ -95,5 +106,36 @@ contract VotingTester is Test {
         vm.prank(alice);
         vm.expectRevert("commit phase over");
         voting.castVote(proposalId, keccak256("x"));
+    }
+
+    function test_delete_all_proposals() public {
+        uint256 proposalId1 = voting.createProposal(uint64(block.timestamp + 1 days));
+        uint256 proposalId2 = voting.createProposal(uint64(block.timestamp + 2 days));
+        assertEq(voting.proposalCount(), 2);
+
+        voting.resetAllProposals();
+        assertEq(voting.proposalCount(), 0);
+
+        (address creator1,,,,,,,) = voting.proposals(proposalId1);
+        (address creator2,,,,,,,) = voting.proposals(proposalId2);
+        assertEq(creator1, address(0));
+        assertEq(creator2, address(0));
+    }
+
+    function test_manual_tally() public {
+        uint256 proposalId = voting.createProposal(uint64(block.timestamp + 1 days));
+        (,,, bytes32 commitmentsDigest,,,,) = voting.proposals(proposalId);
+        bytes memory journal = abi.encode(
+            VotePublicOutput({proposalId: proposalId, yes: 42, no: 17, commitmentsDigest: commitmentsDigest})
+        );
+
+        RiscZeroReceipt memory receipt = verifier.mockProve(ImageID.VOTING_TALLY_ID, sha256(journal));
+
+        voting.settleTallyManually(journal, receipt.seal);
+
+        (bool tallied, uint32 yesCount, uint32 noCount,) = voting.checkProposalTallyState(proposalId);
+        assertEq(tallied, true);
+        assertEq(yesCount, 42);
+        assertEq(noCount, 17);
     }
 }

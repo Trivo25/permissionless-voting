@@ -14,25 +14,29 @@
 
 use std::time::Duration;
 
-use crate::even_number::IEvenNumber::IEvenNumberInstance;
+use crate::voting_contract::IVoting;
 use alloy::{
-    primitives::{Address, U256},
+    primitives::{keccak256, Address, Bytes, U256, U64},
     signers::local::PrivateKeySigner,
     sol_types::SolValue,
 };
 use anyhow::{bail, Context, Result};
-use boundless_market::{Client, Deployment, StorageProviderConfig};
+use boundless_market::{
+    request_builder::RequirementParams, Client, Deployment, StorageProviderConfig,
+};
 use clap::Parser;
-use guests::IS_EVEN_ELF;
+use guests::vote_types::{Vote, VotePublicOutput, VoteWitness};
+use guests::VOTING_TALLY_ELF;
+use tokio::join;
 use url::Url;
-
+use voting_contract::IVoting::IVotingInstance;
 /// Timeout for the transaction to be confirmed.
 pub const TX_TIMEOUT: Duration = Duration::from_secs(30);
 
-mod even_number {
+mod voting_contract {
     alloy::sol!(
         #![sol(rpc, all_derives)]
-        "../contracts/src/IEvenNumber.sol"
+        "../contracts/src/IVoting.sol"
     );
 }
 
@@ -40,9 +44,6 @@ mod even_number {
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
 struct Args {
-    /// The number to publish to the EvenNumber contract.
-    #[clap(short, long)]
-    number: u32,
     /// URL of the Ethereum RPC endpoint.
     #[clap(short, long, env)]
     rpc_url: Url,
@@ -51,7 +52,7 @@ struct Args {
     private_key: PrivateKeySigner,
     /// Address of the EvenNumber contract.
     #[clap(short, long, env)]
-    even_number_address: Address,
+    voting_contract_address: Address,
     /// URL where provers can download the program to be proven.
     #[clap(long, env)]
     program_url: Option<Url>,
@@ -81,7 +82,6 @@ async fn main() -> Result<()> {
     }
     let args = Args::parse();
 
-    // Create a Boundless client from the provided parameters.
     let client = Client::builder()
         .with_rpc_url(args.rpc_url)
         .with_deployment(args.deployment)
@@ -91,27 +91,68 @@ async fn main() -> Result<()> {
         .await
         .context("failed to build boundless client")?;
 
-    // Encode the input for the guest program
-    tracing::info!("Number to publish: {}", args.number);
-    let input_bytes = U256::from(args.number).abi_encode();
+    let voting_contract = IVoting::new(args.voting_contract_address, client.provider().clone());
 
-    // Build the request based on whether program URL is provided
+    // reset proposals on contract and create a new one
+    tracing::info!("Resetting all proposals on the voting contract");
+    reset_all_proposals(&client, &voting_contract).await?;
+    tracing::info!("Creating new proposal");
+
+    create_new_proposal(&client, &voting_contract).await?;
+
+    // manual dummy inputs
+    let votes = VoteWitness {
+        proposalId: U256::from(0),
+        votes: vec![
+            Vote {
+                proposalId: U256::from(0),
+                voter: Address::from([0x01u8; 20]),
+                choice: true,
+            },
+            Vote {
+                proposalId: U256::from(0),
+                voter: Address::from([0x02u8; 20]),
+                choice: false,
+            },
+            Vote {
+                proposalId: U256::from(0),
+                voter: Address::from([0x03u8; 20]),
+                choice: true,
+            },
+        ],
+    };
+    let proposal_meta_data = get_proposal_meta_data(&voting_contract, votes.proposalId).await?;
+    tracing::info!(
+        "Current commitments digest on contract: {:?}",
+        proposal_meta_data.commitmentsDigest
+    );
+    tracing::info!("Casting votes");
+
+    cast_vote(&client, &voting_contract, &votes.votes[0]).await?;
+    cast_vote(&client, &voting_contract, &votes.votes[1]).await?;
+    cast_vote(&client, &voting_contract, &votes.votes[2]).await?;
+
+    tracing::info!("Casted all votes, submitting tally request");
+
+    let proposal_meta_data = get_proposal_meta_data(&voting_contract, votes.proposalId).await?;
+    tracing::info!(
+        "Current commitments digest on contract: {:?}",
+        proposal_meta_data.commitmentsDigest
+    );
     let request = if let Some(program_url) = args.program_url {
-        // Use the provided URL
         client
             .new_request()
             .with_program_url(program_url)?
-            .with_stdin(input_bytes.clone())
+            .with_stdin(votes.abi_encode().clone())
     } else {
         client
             .new_request()
-            .with_program(IS_EVEN_ELF)
-            .with_stdin(input_bytes)
+            .with_program(VOTING_TALLY_ELF)
+            .with_stdin(votes.abi_encode().clone())
     };
 
     let (request_id, expires_at) = client.submit_onchain(request).await?;
 
-    // Wait for the request to be fulfilled. The market will return the fulfillment.
     tracing::info!("Waiting for request {:x} to be fulfilled", request_id);
     let fulfillment = client
         .wait_for_request_fulfillment(
@@ -122,17 +163,45 @@ async fn main() -> Result<()> {
         .await?;
     tracing::info!("Request {:x} fulfilled", request_id);
 
-    // We interact with the EvenNumber contract by calling the set function with our number and
-    // the seal (i.e. proof) returned by the market.
-    let even_number = IEvenNumberInstance::new(args.even_number_address, client.provider().clone());
-    let call_set = even_number
-        .set(U256::from(args.number), fulfillment.seal)
-        .from(client.caller());
+    let fulfillment_data = fulfillment.data()?;
+    let journal_bytes = fulfillment_data.journal().unwrap();
 
-    // By calling the set function, we verify the seal against the published roots
-    // of the SetVerifier contract.
-    tracing::info!("Calling EvenNumber set function");
-    let pending_tx = call_set.send().await.context("failed to broadcast tx")?;
+    let journal = VotePublicOutput::abi_decode(journal_bytes)
+        .context("failed to decode journal from fulfillment data")?;
+
+    tracing::info!("Vote tally results for proposal {:?}", journal);
+
+    // get current commitment for proposal from contract
+    let proposal_meta_data = get_proposal_meta_data(&voting_contract, votes.proposalId).await?;
+    tracing::info!(
+        "Current commitments digest on contract: {:?}",
+        proposal_meta_data.commitmentsDigest
+    );
+    settle_tally(&client, &voting_contract, &journal_bytes, &fulfillment.seal).await?;
+
+    // query state of contract and proposal to check if the tally was completed
+    let proposal_meta_data = get_proposal_meta_data(&voting_contract, votes.proposalId).await?;
+
+    tracing::info!(
+        "Proposal {:?} tallied: {:?}. with yes votes: {:?}, no votes: {:?}",
+        votes.proposalId,
+        proposal_meta_data.tallied,
+        proposal_meta_data.yesCount,
+        proposal_meta_data.noCount
+    );
+
+    Ok(())
+}
+
+async fn reset_all_proposals(
+    client: &Client,
+    voting_contract: &IVotingInstance<alloy::providers::DynProvider>,
+) -> Result<()> {
+    let reset_proposals_call = voting_contract.resetAllProposals().from(client.caller());
+    let pending_tx = reset_proposals_call
+        .send()
+        .await
+        .context("failed to broadcast tx")?;
     tracing::info!("Broadcasting tx {}", pending_tx.tx_hash());
     let tx_hash = pending_tx
         .with_timeout(Some(TX_TIMEOUT))
@@ -140,18 +209,94 @@ async fn main() -> Result<()> {
         .await
         .context("failed to confirm tx")?;
     tracing::info!("Tx {:?} confirmed", tx_hash);
+    return Ok(());
+}
 
-    // Query the value stored at the EvenNumber address to check it was set correctly
-    let number = even_number
-        .get()
+async fn create_new_proposal(
+    client: &Client,
+    voting_contract: &IVotingInstance<alloy::providers::DynProvider>,
+) -> Result<()> {
+    let deadline_timestamp = (std::time::SystemTime::now()
+        + std::time::Duration::from_secs(60 * 60 * 1)) // 1 hour from now
+    .duration_since(std::time::UNIX_EPOCH)
+    .unwrap()
+    .as_secs();
+    let create_proposal_call = voting_contract
+        .createProposal(deadline_timestamp)
+        .from(client.caller());
+    let pending_tx = create_proposal_call
+        .send()
+        .await
+        .context("failed to broadcast tx")?;
+    tracing::info!("Broadcasting tx {}", pending_tx.tx_hash());
+    let tx_hash = pending_tx
+        .with_timeout(Some(TX_TIMEOUT))
+        .watch()
+        .await
+        .context("failed to confirm tx")?;
+
+    tracing::info!("Tx {:?} confirmed", tx_hash);
+    return Ok(());
+}
+
+async fn settle_tally(
+    client: &Client,
+    voting_contract: &IVotingInstance<alloy::providers::DynProvider>,
+    journal_bytes: &Bytes,
+    seal: &Bytes,
+) -> Result<()> {
+    let call_settle_tally_manually = voting_contract
+        .settleTallyManually(journal_bytes.clone(), seal.clone())
+        .from(client.caller());
+
+    tracing::info!("Calling settleTallyManually function");
+    let pending_tx = call_settle_tally_manually
+        .send()
+        .await
+        .context("failed to broadcast tx")?;
+    tracing::info!("Broadcasting tx {}", pending_tx.tx_hash());
+    let tx_hash = pending_tx
+        .with_timeout(Some(TX_TIMEOUT))
+        .watch()
+        .await
+        .context("failed to confirm tx")?;
+    tracing::info!("Tx {:?} confirmed", tx_hash);
+    return Ok(());
+}
+
+async fn cast_vote(
+    client: &Client,
+    voting_contract: &IVotingInstance<alloy::providers::DynProvider>,
+    vote: &Vote,
+) -> Result<()> {
+    let commitment = keccak256((vote.voter.clone(), vote.choice, vote.proposalId).abi_encode());
+    let call_cast_vote = voting_contract
+        .castVote(vote.proposalId, commitment)
+        .from(client.caller());
+
+    tracing::info!("Calling castVote function");
+    let pending_tx = call_cast_vote
+        .send()
+        .await
+        .context("failed to broadcast tx")?;
+    tracing::info!("Broadcasting tx {}", pending_tx.tx_hash());
+    let tx_hash = pending_tx
+        .with_timeout(Some(TX_TIMEOUT))
+        .watch()
+        .await
+        .context("failed to confirm tx")?;
+    tracing::info!("Tx {:?} confirmed", tx_hash);
+    return Ok(());
+}
+
+async fn get_proposal_meta_data(
+    voting_contract: &IVotingInstance<alloy::providers::DynProvider>,
+    proposal_id: U256,
+) -> Result<IVoting::checkProposalTallyStateReturn> {
+    let proposal_meta_data = voting_contract
+        .checkProposalTallyState(U256::from(proposal_id))
         .call()
         .await
-        .context("failed to get number from contract")?;
-    tracing::info!(
-        "The number variable for contract at address: {:?} is set to {:?}",
-        args.even_number_address,
-        number
-    );
-
-    Ok(())
+        .context("failed to get proposal tally state from contract")?;
+    Ok(proposal_meta_data)
 }
