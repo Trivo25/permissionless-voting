@@ -31,7 +31,7 @@ contract Voting {
             creator: msg.sender,
             proposalId: uint32(proposalId),
             commitDeadline: proposalDeadline,
-            commitmentsDigest: keccak256(abi.encodePacked("proposal", block.chainid, address(this), proposalId)),
+            commitmentsDigest: keccak256(abi.encode("proposal", block.chainid, address(this), proposalId)),
             tallied: false,
             yesCount: 0,
             noCount: 0,
@@ -48,7 +48,7 @@ contract Voting {
         require(block.timestamp < p.commitDeadline, "commit phase over");
 
         // update accumulator, digest = H(prevDigest || commitment)
-        p.commitmentsDigest = keccak256(abi.encodePacked(p.commitmentsDigest, commitment));
+        p.commitmentsDigest = keccak256(abi.encode(p.commitmentsDigest, commitment));
         p.votesCount += 1;
         proposals[proposalId] = p;
     }

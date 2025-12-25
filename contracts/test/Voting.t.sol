@@ -39,7 +39,7 @@ contract VotingTester is Test {
         assertEq(creator, address(florian));
         assertEq(pid, uint32(proposalId));
         assertEq(commitDeadline, deadline);
-        assertEq(commitmentsDigest, keccak256(abi.encodePacked("proposal", block.chainid, address(voting), proposalId)));
+        assertEq(commitmentsDigest, keccak256(abi.encode("proposal", block.chainid, address(voting), proposalId)));
         assertEq(tallied, false);
         assertEq(yesCount, 0);
         assertEq(noCount, 0);
@@ -60,23 +60,23 @@ contract VotingTester is Test {
         vm.prank(alice);
 
         // the commitment of the vote is H(address || choice || proposalID)
-        bytes32 aliceCommitment = keccak256(abi.encodePacked(alice, true, proposalId));
+        bytes32 aliceCommitment = keccak256(abi.encode(alice, true, proposalId));
         voting.castVote(proposalId, aliceCommitment);
 
         (,,, bytes32 digestAfterAlice,,,, uint32 votesCountAfterAlice) = voting.proposals(proposalId);
         console2.logBytes32(digestAfterAlice);
-        bytes32 expectedAfterAlice = keccak256(abi.encodePacked(originalDigest, aliceCommitment));
+        bytes32 expectedAfterAlice = keccak256(abi.encode(originalDigest, aliceCommitment));
         assertEq(digestAfterAlice, expectedAfterAlice);
         assertEq(votesCountAfterAlice, 1);
 
         // cast vote #2
         vm.prank(bob);
-        bytes32 bobCommitment = keccak256(abi.encodePacked(bob, true, proposalId));
+        bytes32 bobCommitment = keccak256(abi.encode(bob, true, proposalId));
         voting.castVote(proposalId, bobCommitment);
 
         (,,, bytes32 digestAfterBob,,,, uint32 votesCountAfterBob) = voting.proposals(proposalId);
         console2.logBytes32(digestAfterBob);
-        bytes32 expectedAfterBob = keccak256(abi.encodePacked(expectedAfterAlice, bobCommitment));
+        bytes32 expectedAfterBob = keccak256(abi.encode(expectedAfterAlice, bobCommitment));
         assertEq(digestAfterBob, expectedAfterBob);
         assertEq(votesCountAfterBob, 2);
     }
