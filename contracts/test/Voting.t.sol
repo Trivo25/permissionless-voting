@@ -7,6 +7,10 @@ import "openzeppelin/contracts/utils/Strings.sol";
 contract VotingTester is Test {
     Voting public voting;
 
+    address alice = makeAddr("alice");
+    address bob = makeAddr("bob");
+    address florian = makeAddr("florian");
+
     function setUp() public {
         voting = new Voting();
         assertEq(voting.proposalCount(), 0);
