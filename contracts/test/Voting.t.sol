@@ -15,6 +15,6 @@ contract VotingTester is Test {
         uint64 deadline = uint64(block.timestamp + 1 days);
         uint256 proposalId = voting.createProposal(deadline);
         assertEq(proposalId, 0);
-        assertEq(voting.proposalCount(), 0);
+        assertEq(voting.proposalCount(), 1);
     }
 }
