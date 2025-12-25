@@ -47,6 +47,8 @@ contract Voting {
 
         // update accumulator, digest = H(prevDigest || commitment)
         p.commitmentsDigest = keccak256(abi.encodePacked(p.commitmentsDigest, commitment));
+
+        proposals[proposalId] = p;
     }
 
     function requestTally(uint256 proposalId) external {}
