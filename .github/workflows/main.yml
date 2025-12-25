@@ -11,10 +11,10 @@ concurrency:
 
 env:
   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-  RUST_BACKTRACE: "1"
+  RUST_BACKTRACE: '1'
 
 jobs:
-    # see: https://github.com/orgs/community/discussions/26822
+  # see: https://github.com/orgs/community/discussions/26822
   main-status-check:
     if: always()
     needs:
@@ -34,8 +34,8 @@ jobs:
     steps:
       # This is a workaround from: https://github.com/actions/checkout/issues/590#issuecomment-970586842
       - name: checkout dummy commit (submodule bug workaround)
-        run: "git checkout -f $(git -c user.name=x -c user.email=x@x commit-tree $(git hash-object -t tree /dev/null) < /dev/null) || :"
-      
+        run: 'git checkout -f $(git -c user.name=x -c user.email=x@x commit-tree $(git hash-object -t tree /dev/null) < /dev/null) || :'
+
       - name: checkout code
         uses: actions/checkout@v4
         with:
@@ -43,7 +43,7 @@ jobs:
 
       - name: install foundry
         uses: foundry-rs/foundry-toolchain@v1
-        
+
       - name: install cargo risczero
         uses: ./.github/actions/bininstall-risc0
         with:
@@ -64,7 +64,7 @@ jobs:
       - name: forge test
         run: forge test -vvv
         env:
-          RISC0_DEV_MODE: "true"
+          RISC0_DEV_MODE: 'true'
 
   lint:
     runs-on: ubuntu-latest
@@ -84,7 +84,7 @@ jobs:
         uses: baptiste0928/cargo-install@904927dbe77864e0f2281519fe9d5bd097a220b3
         with:
           crate: cargo-sort
-          version: "=1.0.9"
+          version: '=1.0.9'
           locked: true
 
       - name: cargo Sort
@@ -94,9 +94,8 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: lint guest rust code
-        working-directory: guests/is-even
+        working-directory: guests/voting-tally
         run: cargo fmt --all --check
-
 
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets --all-features
@@ -106,4 +105,4 @@ jobs:
           RISC0_SKIP_BUILD_KERNEL: true,
 
       - name: forge fmt
-        run: forge fmt --check      
+        run: forge fmt --check
