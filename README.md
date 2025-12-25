@@ -3,17 +3,11 @@
 ## Notes
 
 - Callbacks
-
   - The marketplace can invoke a callback when a proof has been generated
-
 - Requestors
-
   - A nice way to allow proof requests in a permissionless way
-
   - Someone invokes a method on a smart contract that request a proof via the marketplace
-
   - Boundless checks if the user is allowed to request that proof (via the `isValidSignature` function)
-
     - if valid, the contract pays the marketplace for the proof
 
 ## Idea
@@ -22,20 +16,24 @@ I want to do something unique but keep it straightforward and minimalist. Origin
 
 The idea is that members of a community/DAO/.. can vote on a simple proposal and anyone can invoke the tally process through Smart Contract Requestors (that way no single entity has control over when or if to start the tally process). Once Boundless generates the proof of the tally, it invokes a callback in a Solidity contract, provides the proof of the tally and the contract, via the callback, verifies the proof and settles the tally.
 
+The voters only send a commit of their vote to the EVM contract `H(address || choice || proposalID)` where `choice` is `choice ∈ {YES, NO}`. The voting contract stores the commits in a Merkle List (a hashed list) so that the prover can't omit certain votes.
+
 ```mermaid
-%%{init: {"flowchart": {"nodeSpacing": 300, "rankSpacing": 100}} }%%
-flowchart TD
+%%{init: {"flowchart": {"nodeSpacing": 120, "rankSpacing": 80}} }%%
+flowchart LR
   V[Voters]
   T[Anyone]
   SC[Voting Contract]
   M[Boundless Market]
   Z[zkVM + Prover]
+  R[Voting result]
 
-  V -->|cast vote| SC
+  V -->|cast vote commit| SC
   T -->|submit tally request| M
-  M -->|authorize via `isValidSignature` check| SC
+  M -->|authenticate proof request via isValidSignature| SC
+  SC -.->|pay marketplace if valid| M
   M -->|request tally proof| Z
-  Z -->|proof ready| M
-  M -->|invoke callback `handleProof`| SC
-  SC -->|verify + store result| SC
+  Z -->|fufill tally proof request| M
+  M -->|trigger handleProof callback to settle tally| SC
+  SC -->|store result, trigger outcome| R
 ```
