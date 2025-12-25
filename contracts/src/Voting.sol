@@ -30,7 +30,7 @@ contract Voting {
             creator: msg.sender,
             proposalId: uint32(proposalId),
             commitDeadline: proposalDeadline,
-            commitmentsDigest: bytes32(0),
+            commitmentsDigest: keccak256(abi.encodePacked("proposal", block.chainid, address(this), proposalId)),
             tallied: false,
             yesCount: 0,
             noCount: 0
@@ -39,7 +39,15 @@ contract Voting {
         return proposalId;
     }
 
-    function commitVote(uint256 proposalId, bytes32 commitment) external {}
+    function castVote(uint256 proposalId, bytes32 commitment) external {
+        Proposal storage p = proposals[proposalId];
+
+        require(p.creator != address(0), "proposal does not exist");
+        require(block.timestamp < p.commitDeadline, "commit phase over");
+
+        // update accumulator, digest = H(prevDigest || commitment)
+        p.commitmentsDigest = keccak256(abi.encodePacked(p.commitmentsDigest, commitment));
+    }
 
     function requestTally(uint256 proposalId) external {}
 }
