@@ -86,4 +86,14 @@ contract VotingTester is Test {
         vm.expectRevert("proposal does not exist");
         voting.castVote(999, keccak256("x"));
     }
+
+    function test_castVote_reverts_after_deadline() public {
+        uint64 deadline = uint64(block.timestamp + 10);
+        uint256 proposalId = voting.createProposal(deadline);
+
+        vm.warp(deadline + 1);
+        vm.prank(alice);
+        vm.expectRevert("commit phase over");
+        voting.castVote(proposalId, keccak256("x"));
+    }
 }
