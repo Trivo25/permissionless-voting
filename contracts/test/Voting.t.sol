@@ -80,4 +80,10 @@ contract VotingTester is Test {
         assertEq(digestAfterBob, expectedAfterBob);
         assertEq(votesCountAfterBob, 2);
     }
+
+    function test_castVote_reverts_if_proposal_missing() public {
+        vm.prank(alice);
+        vm.expectRevert("proposal does not exist");
+        voting.castVote(999, keccak256("x"));
+    }
 }
