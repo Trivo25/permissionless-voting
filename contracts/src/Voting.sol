@@ -10,6 +10,7 @@ struct Proposal {
     bool tallied;
     uint32 yesCount;
     uint32 noCount;
+    uint32 votesCount;
 }
 
 contract Voting {
@@ -33,7 +34,8 @@ contract Voting {
             commitmentsDigest: keccak256(abi.encodePacked("proposal", block.chainid, address(this), proposalId)),
             tallied: false,
             yesCount: 0,
-            noCount: 0
+            noCount: 0,
+            votesCount: 0
         });
 
         return proposalId;
@@ -47,7 +49,7 @@ contract Voting {
 
         // update accumulator, digest = H(prevDigest || commitment)
         p.commitmentsDigest = keccak256(abi.encodePacked(p.commitmentsDigest, commitment));
-
+        p.votesCount += 1;
         proposals[proposalId] = p;
     }
 
