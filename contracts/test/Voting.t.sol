@@ -19,6 +19,8 @@ contract VotingTester is Test {
     function test_createProposal() public {
         uint64 deadline = uint64(block.timestamp + 1 days);
 
+        vm.prank(florian);
+
         uint256 proposalId = voting.createProposal(deadline);
         assertEq(proposalId, 0);
         assertEq(voting.proposalCount(), 1);
@@ -34,7 +36,7 @@ contract VotingTester is Test {
             uint32 votesCount
         ) = voting.proposals(proposalId);
 
-        assertEq(creator, address(this));
+        assertEq(creator, address(florian));
         assertEq(pid, uint32(proposalId));
         assertEq(commitDeadline, deadline);
         assertEq(commitmentsDigest, keccak256(abi.encodePacked("proposal", block.chainid, address(voting), proposalId)));
