@@ -10,4 +10,11 @@ contract VotingTester is Test {
         voting = new Voting();
         assertEq(voting.proposalCount(), 0);
     }
+
+    function test_createProposal() public {
+        uint64 deadline = uint64(block.timestamp + 1 days);
+        uint256 proposalId = voting.createProposal(deadline);
+        assertEq(proposalId, 0);
+        assertEq(voting.proposalCount(), 0);
+    }
 }
