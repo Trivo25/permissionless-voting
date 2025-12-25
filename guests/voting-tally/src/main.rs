@@ -1,21 +1,9 @@
-use alloy_sol_types::{sol, SolValue};
+use alloy_sol_types::SolValue;
 use risc0_zkvm::guest::env;
 use std::io::Read;
+use vote_types::{VotePublicOutput, VoteWitness};
 
 risc0_zkvm::guest::entry!(main);
-
-sol! {
-    struct VoteWitness {
-        uint256 proposalId;
-        bool[] votes;
-    }
-
-    struct VotePublicOutput {
-        uint256 proposalId;
-        uint32 yes;
-        uint32 no;
-    }
-}
 
 fn main() {
     let mut input_bytes = Vec::<u8>::new();
