@@ -15,26 +15,13 @@ struct Proposal {
 }
 
 contract Voting {
-    // template specifics
-
-    // verifier contract address
-
-    IRiscZeroVerifier public immutable VERIFIER;
-
-    // image_id of the risc0 zkvm program, similar to a verification key of the circuit
-
-    /*     bytes32 public constant IMAGE_ID = ImageID.IS_EVEN_ID;
-    */
     // tracking all proposals
-
     uint256 public proposalCount;
 
     // mapping of proposalID to proposal
-
     mapping(uint256 => Proposal) public proposals;
 
-    constructor(IRiscZeroVerifier _verifier) {
-        VERIFIER = _verifier;
+    constructor() {
         proposalCount = 0;
     }
 
