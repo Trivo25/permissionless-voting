@@ -19,3 +19,6 @@ target/
 # Ignore generated files
 contracts/src/ImageID.sol
 contracts/test/Elf.sol
+
+
+node_modules/
