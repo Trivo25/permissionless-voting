@@ -4,8 +4,6 @@ import {IRiscZeroVerifier} from "risc0/IRiscZeroVerifier.sol";
 
 import {ImageID} from "./ImageID.sol"; // auto-generated contract after running `cargo build`.
 
-interface IVoting {}
-
 struct Proposal {
     address creator;
     uint32 proposalId;
@@ -16,7 +14,7 @@ struct Proposal {
     uint32 noCount;
 }
 
-contract Voting is IVoting {
+contract Voting {
     // template specifics
 
     // verifier contract address
