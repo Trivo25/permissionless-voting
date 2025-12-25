@@ -1,21 +1,43 @@
+use alloy_sol_types::{sol, SolValue};
+use risc0_zkvm::guest::env;
 use std::io::Read;
 
-use alloy_primitives::U256;
-use alloy_sol_types::SolValue;
-use risc0_zkvm::guest::env;
+risc0_zkvm::guest::entry!(main);
+
+sol! {
+    struct VoteWitness {
+        uint256 proposalId;
+        bool[] votes;
+    }
+
+    struct VotePublicOutput {
+        uint256 proposalId;
+        uint32 yes;
+        uint32 no;
+    }
+}
 
 fn main() {
-    // Read the input data for this application.
     let mut input_bytes = Vec::<u8>::new();
     env::stdin().read_to_end(&mut input_bytes).unwrap();
-    // Decode and parse the input
-    let number = <U256>::abi_decode(&input_bytes).unwrap();
 
-    // Run the computation.
-    // In this case, asserting that the provided number is even.
-    assert!(!number.bit(0), "number is not even");
+    let input = VoteWitness::abi_decode(&input_bytes).unwrap();
 
-    // Commit the journal that will be received by the application contract.
-    // Journal is encoded using Solidity ABI for easy decoding in the app contract.
-    env::commit_slice(number.abi_encode().as_slice());
+    let mut yes: u32 = 0;
+    let mut no: u32 = 0;
+    for v in input.votes {
+        if v {
+            yes += 1;
+        } else {
+            no += 1;
+        }
+    }
+
+    let publicOutput = VotePublicOutput {
+        proposalId: input.proposalId,
+        yes,
+        no,
+    };
+    let journal_bytes = publicOutput.abi_encode();
+    env::commit_slice(&journal_bytes);
 }
