@@ -1,3 +1,5 @@
+#![no_main]
+
 use alloy_primitives::keccak256;
 use alloy_sol_types::SolValue;
 use risc0_zkvm::guest::env;

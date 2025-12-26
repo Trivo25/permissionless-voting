@@ -4,11 +4,31 @@ import {Test, console2} from "forge-std/Test.sol";
 import {Voting, VotePublicOutput} from "../src/Voting.sol";
 import {RiscZeroMockVerifier} from "risc0/test/RiscZeroMockVerifier.sol";
 import {Receipt as RiscZeroReceipt} from "risc0/IRiscZeroVerifier.sol";
+import {IBoundlessMarket} from "boundless/IBoundlessMarket.sol";
 import {ImageID} from "../src/ImageID.sol";
+
+contract MockBoundlessMarket {
+    bytes32 private immutable DOMAIN_SEPARATOR;
+
+    constructor(bytes32 domain) {
+        DOMAIN_SEPARATOR = domain;
+    }
+
+    function eip712DomainSeparator() external view returns (bytes32) {
+        return DOMAIN_SEPARATOR;
+    }
+
+    function deliverProof(Voting voting, bytes32 imageId, bytes memory journal, bytes memory seal) external {
+        voting.handleProof(imageId, journal, seal);
+    }
+
+    function deposit() external payable {}
+}
 
 contract VotingTester is Test {
     Voting public voting;
     RiscZeroMockVerifier public verifier;
+    MockBoundlessMarket public mockBoundlessMarket;
 
     address alice = makeAddr("alice");
     address bob = makeAddr("bob");
@@ -16,7 +36,8 @@ contract VotingTester is Test {
 
     function setUp() public {
         verifier = new RiscZeroMockVerifier(0);
-        voting = new Voting(verifier);
+        mockBoundlessMarket = new MockBoundlessMarket(keccak256("BOUNDLESS"));
+        voting = new Voting(verifier, IBoundlessMarket(address(mockBoundlessMarket)));
         assertEq(voting.proposalCount(), 0);
     }
 
@@ -25,7 +46,7 @@ contract VotingTester is Test {
 
         vm.prank(florian);
 
-        uint256 proposalId = voting.createProposal(deadline);
+        uint32 proposalId = voting.createProposal(deadline);
         assertEq(proposalId, 0);
         assertEq(voting.proposalCount(), 1);
 
@@ -57,7 +78,7 @@ contract VotingTester is Test {
     }
 
     function test_castVote_updates_digest() public {
-        uint256 proposalId = voting.createProposal(uint64(block.timestamp + 1 days));
+        uint32 proposalId = voting.createProposal(uint64(block.timestamp + 1 days));
         (,,, bytes32 originalDigest,,,,) = voting.proposals(proposalId);
 
         // cast vote #1
@@ -93,7 +114,7 @@ contract VotingTester is Test {
 
     function test_castVote_reverts_after_deadline() public {
         uint64 deadline = uint64(block.timestamp + 10);
-        uint256 proposalId = voting.createProposal(deadline);
+        uint32 proposalId = voting.createProposal(deadline);
 
         vm.warp(deadline + 1);
         vm.prank(alice);
@@ -102,7 +123,7 @@ contract VotingTester is Test {
     }
 
     function test_settleTallyManually_settles_tally() public {
-        uint256 proposalId = voting.createProposal(uint64(block.timestamp + 1 days));
+        uint32 proposalId = voting.createProposal(uint64(block.timestamp + 1 days));
         (,,, bytes32 commitmentsDigest,,,,) = voting.proposals(proposalId);
         bytes memory journal = abi.encode(
             VotePublicOutput({proposalId: proposalId, yes: 42, no: 17, commitmentsDigest: commitmentsDigest})
@@ -119,7 +140,7 @@ contract VotingTester is Test {
     }
 
     function test_handleProof_emits_event() public {
-        uint256 proposalId = voting.createProposal(uint64(block.timestamp + 1 days));
+        uint32 proposalId = voting.createProposal(uint64(block.timestamp + 1 days));
         (,,, bytes32 commitmentsDigest,,,,) = voting.proposals(proposalId);
 
         VotePublicOutput memory publicOutput =
@@ -130,6 +151,6 @@ contract VotingTester is Test {
 
         vm.expectEmit(false, false, false, true, address(voting));
         emit Voting.Proof(publicOutput);
-        voting.handleProof(ImageID.VOTING_TALLY_ID, journal, receipt.seal);
+        mockBoundlessMarket.deliverProof(voting, ImageID.VOTING_TALLY_ID, journal, receipt.seal);
     }
 }

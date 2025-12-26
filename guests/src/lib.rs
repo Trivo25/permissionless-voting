@@ -15,5 +15,4 @@
 pub mod vote_types {
     pub use ::vote_types::{Vote, VotePublicOutput, VoteWitness};
 }
-
 include!(concat!(env!("OUT_DIR"), "/methods.rs"));

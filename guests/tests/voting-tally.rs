@@ -1,4 +1,4 @@
-use alloy_primitives::{keccak256, Address, U256};
+use alloy_primitives::{keccak256, Address};
 use alloy_sol_types::SolValue;
 use guests::VOTING_TALLY_ELF;
 use risc0_zkvm::{default_executor, ExecutorEnv};
@@ -6,7 +6,7 @@ use vote_types::{Vote, VotePublicOutput, VoteWitness};
 
 #[test]
 fn tally_votes_basic() {
-    let proposal_id = U256::from(0);
+    let proposal_id = 0;
     // manual dummy inputs
     let input = VoteWitness {
         proposalId: proposal_id,

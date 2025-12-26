@@ -18,6 +18,8 @@ The idea is that members of a community/DAO/.. can vote on a simple proposal and
 
 The voters only send a commit of their vote to the EVM contract `H(address || choice || proposalID)` where `choice` is `choice ∈ {YES, NO}`. The voting contract stores the commits in a Merkle List (a hashed list) so that the prover can't omit certain votes.
 
+For simplcity, I will omit a bunch of application specific checks but mention them where needed (e.g. check that the deadline has passed before finishing the tally, ..). Additionally, one contract serves for everything: the voting app specific logic, the callback and the smart contract requestor via `isValidSignature` - this is a deliberate design choice to keep thigs minimal and simple.
+
 ```mermaid
 %%{init: {"flowchart": {"nodeSpacing": 120, "rankSpacing": 80}} }%%
 flowchart LR

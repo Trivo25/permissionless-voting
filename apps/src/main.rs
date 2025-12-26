@@ -16,14 +16,15 @@ use std::time::Duration;
 
 use crate::voting_contract::IVoting;
 use alloy::{
-    primitives::{keccak256, Address, Bytes, U256},
+    primitives::{keccak256, utils::parse_ether, Address, Bytes, B256, U256},
     signers::local::PrivateKeySigner,
     sol_types::SolValue,
 };
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use boundless_market::{
-    contracts::Fulfillment, request_builder::RequirementParams, Client, Deployment,
-    StorageProviderConfig,
+    contracts::{Fulfillment, RequestId},
+    request_builder::{OfferParams, RequirementParams},
+    Client, Deployment, StorageProviderConfig,
 };
 use clap::Parser;
 use guests::vote_types::{Vote, VotePublicOutput, VoteWitness};
@@ -82,6 +83,7 @@ async fn main() -> Result<()> {
         Err(e) => bail!("failed to load .env file: {}", e),
     }
     let args = Args::parse();
+    let program_url = args.program_url.clone();
 
     let client = Client::builder()
         .with_rpc_url(args.rpc_url)
@@ -94,40 +96,70 @@ async fn main() -> Result<()> {
 
     let voting_contract = IVoting::new(args.voting_contract_address, client.provider().clone());
 
-    tracing::info!("Creating new proposal");
     let proposal_id = create_new_proposal(&client, &voting_contract).await?;
 
     let casted_votes = prepare_and_cast_votes(&client, &voting_contract, proposal_id).await?;
 
-    let request = if let Some(program_url) = args.program_url {
+    let initial_proposal_metadata = get_proposal_meta_data(&voting_contract, proposal_id).await?;
+
+    let expected_public_output = build_expected_public_output(
+        proposal_id,
+        initial_proposal_metadata.commitmentsDigest,
+        &casted_votes,
+    )?;
+
+    let request_id =
+        RequestId::new(args.voting_contract_address, proposal_id).set_smart_contract_signed_flag();
+
+    let stdin = casted_votes.abi_encode().clone();
+    let offer = OfferParams::builder()
+        .ramp_up_period(200)
+        .max_price(parse_ether("0.01")?)
+        .lock_collateral(U256::from(5u64) * U256::from(1_000_000_000_000_000_000u64))
+        .build()
+        .expect("offer params");
+
+    let requirements = RequirementParams::builder()
+        .callback_address(args.voting_contract_address)
+        .callback_gas_limit(100_000)
+        .build()
+        .expect("requirements");
+    let base_request = if let Some(url) = program_url {
+        tracing::info!("Using program URL: {}", url);
         client
             .new_request()
-            .with_program_url(program_url)?
-            .with_stdin(casted_votes.abi_encode().clone())
-            .with_requirements(
-                RequirementParams::builder()
-                    .callback_address(args.voting_contract_address)
-                    .callback_gas_limit(100_000),
-            )
+            .with_request_id(request_id)
+            .with_program_url(url)?
+            .with_stdin(stdin.clone())
+            .with_requirements(requirements.clone())
+            .with_offer(offer.clone())
     } else {
+        tracing::info!("Using built-in ELF for voting tally");
         client
             .new_request()
+            .with_request_id(request_id)
             .with_program(VOTING_TALLY_ELF)
-            .with_stdin(casted_votes.abi_encode().clone())
-            .with_requirements(
-                RequirementParams::builder()
-                    .callback_address(args.voting_contract_address)
-                    .callback_gas_limit(100_000),
-            )
+            .with_stdin(stdin.clone())
+            .with_requirements(requirements)
+            .with_offer(offer)
     };
 
-    let (request_id, expires_at) = client.submit_onchain(request).await?;
-
-    let (_journal_bytes, _fulfillment) = request_boundless_proof(&client, request_id, expires_at)
+    let proof_request = client
+        .build_request(base_request)
         .await
-        .context("failed to get proof fulfilment from Boundless Market")?;
+        .context("failed to build proof request")?;
 
-    // settle_tally(&client, &voting_contract, &journal_bytes, &fulfillment.seal).await?;
+    let signature: Bytes = (proof_request.clone(), expected_public_output)
+        .abi_encode()
+        .into();
+    let (submitted_request_id, expires_at) = client
+        .submit_request_onchain_with_signature(&proof_request, signature)
+        .await?;
+
+    let (_journal_bytes, _fulfillment) =
+        request_boundless_proof(&client, submitted_request_id, expires_at)
+            .await
+            .context("failed to get proof fulfilment from Boundless Market")?;
 
     // query state of contract and proposal to check if the tally was completed
     let proposal_meta_data = get_proposal_meta_data(&voting_contract, proposal_id).await?;
@@ -146,7 +178,8 @@ async fn main() -> Result<()> {
 async fn create_new_proposal(
     client: &Client,
     voting_contract: &IVotingInstance<alloy::providers::DynProvider>,
-) -> Result<U256> {
+) -> Result<u32> {
+    tracing::info!("Creating new proposal");
     let deadline_timestamp = (std::time::SystemTime::now()
         + std::time::Duration::from_secs(60 * 60 * 1)) // 1 hour from now
     .duration_since(std::time::UNIX_EPOCH)
@@ -165,6 +198,7 @@ async fn create_new_proposal(
         .send()
         .await
         .context("failed to broadcast tx")?;
+
     tracing::info!("Broadcasting tx {}", pending_tx.tx_hash());
     let tx_hash = pending_tx
         .with_timeout(Some(TX_TIMEOUT))
@@ -173,6 +207,7 @@ async fn create_new_proposal(
         .context("failed to confirm tx")?;
 
     tracing::info!("Tx {:?} confirmed", tx_hash);
+    tracing::info!("New proposal created with ID {:?}", proposal_id);
     Ok(proposal_id)
 }
 
@@ -203,10 +238,10 @@ async fn cast_vote(
 
 async fn get_proposal_meta_data(
     voting_contract: &IVotingInstance<alloy::providers::DynProvider>,
-    proposal_id: U256,
+    proposal_id: u32,
 ) -> Result<IVoting::checkProposalTallyStateReturn> {
     let proposal_meta_data = voting_contract
-        .checkProposalTallyState(U256::from(proposal_id))
+        .checkProposalTallyState(proposal_id)
         .call()
         .await
         .context("failed to get proposal tally state from contract")?;
@@ -216,7 +251,7 @@ async fn get_proposal_meta_data(
 async fn prepare_and_cast_votes(
     client: &Client,
     voting_contract: &IVotingInstance<alloy::providers::DynProvider>,
-    proposal_id: U256,
+    proposal_id: u32,
 ) -> Result<VoteWitness> {
     // manual dummy inputs
     let votes = VoteWitness {
@@ -249,6 +284,25 @@ async fn prepare_and_cast_votes(
     tracing::info!("Casted all votes");
 
     Ok(votes)
+}
+
+fn build_expected_public_output(
+    proposal_id: u32,
+    commitments_digest: B256,
+    witness: &VoteWitness,
+) -> Result<VotePublicOutput> {
+    let yes_votes = witness.votes.iter().filter(|vote| vote.choice).count();
+    let no_votes = witness.votes.len().saturating_sub(yes_votes);
+
+    let yes = u32::try_from(yes_votes).map_err(|_| anyhow!("too many yes votes for u32"))?;
+    let no = u32::try_from(no_votes).map_err(|_| anyhow!("too many no votes for u32"))?;
+
+    Ok(VotePublicOutput {
+        proposalId: proposal_id,
+        commitmentsDigest: commitments_digest,
+        yes,
+        no,
+    })
 }
 
 async fn request_boundless_proof(
