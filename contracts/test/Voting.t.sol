@@ -1,22 +1,15 @@
 pragma solidity ^0.8.20;
 
 import {Test, console2} from "forge-std/Test.sol";
-import {Voting} from "../src/Voting.sol";
-import "openzeppelin/contracts/utils/Strings.sol";
+import {Voting, VotePublicOutput} from "../src/Voting.sol";
 import {RiscZeroMockVerifier} from "risc0/test/RiscZeroMockVerifier.sol";
 import {Receipt as RiscZeroReceipt} from "risc0/IRiscZeroVerifier.sol";
 import {ImageID} from "../src/ImageID.sol";
 
-struct VotePublicOutput {
-    uint256 proposalId;
-    bytes32 commitmentsDigest;
-    uint32 yes;
-    uint32 no;
-}
-
 contract VotingTester is Test {
     Voting public voting;
     RiscZeroMockVerifier public verifier;
+
     address alice = makeAddr("alice");
     address bob = makeAddr("bob");
     address florian = makeAddr("florian");
@@ -108,21 +101,7 @@ contract VotingTester is Test {
         voting.castVote(proposalId, keccak256("x"));
     }
 
-    function test_delete_all_proposals() public {
-        uint256 proposalId1 = voting.createProposal(uint64(block.timestamp + 1 days));
-        uint256 proposalId2 = voting.createProposal(uint64(block.timestamp + 2 days));
-        assertEq(voting.proposalCount(), 2);
-
-        voting.resetAllProposals();
-        assertEq(voting.proposalCount(), 0);
-
-        (address creator1,,,,,,,) = voting.proposals(proposalId1);
-        (address creator2,,,,,,,) = voting.proposals(proposalId2);
-        assertEq(creator1, address(0));
-        assertEq(creator2, address(0));
-    }
-
-    function test_manual_tally() public {
+    function test_settleTallyManually_settles_tally() public {
         uint256 proposalId = voting.createProposal(uint64(block.timestamp + 1 days));
         (,,, bytes32 commitmentsDigest,,,,) = voting.proposals(proposalId);
         bytes memory journal = abi.encode(
@@ -137,5 +116,20 @@ contract VotingTester is Test {
         assertEq(tallied, true);
         assertEq(yesCount, 42);
         assertEq(noCount, 17);
+    }
+
+    function test_handleProof_emits_event() public {
+        uint256 proposalId = voting.createProposal(uint64(block.timestamp + 1 days));
+        (,,, bytes32 commitmentsDigest,,,,) = voting.proposals(proposalId);
+
+        VotePublicOutput memory publicOutput =
+            VotePublicOutput({proposalId: proposalId, commitmentsDigest: commitmentsDigest, yes: 10, no: 5});
+        bytes memory journal = abi.encode(publicOutput);
+
+        RiscZeroReceipt memory receipt = verifier.mockProve(ImageID.VOTING_TALLY_ID, sha256(journal));
+
+        vm.expectEmit(false, false, false, true, address(voting));
+        emit Voting.Proof(publicOutput);
+        voting.handleProof(ImageID.VOTING_TALLY_ID, journal, receipt.seal);
     }
 }

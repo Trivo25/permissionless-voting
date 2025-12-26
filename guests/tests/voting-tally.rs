@@ -9,20 +9,20 @@ fn tally_votes_basic() {
     let proposal_id = U256::from(0);
     // manual dummy inputs
     let input = VoteWitness {
-        proposalId: U256::from(0),
+        proposalId: proposal_id,
         votes: vec![
             Vote {
-                proposalId: U256::from(0),
+                proposalId: proposal_id,
                 voter: Address::from([0x01u8; 20]),
                 choice: true,
             },
             Vote {
-                proposalId: U256::from(0),
+                proposalId: proposal_id,
                 voter: Address::from([0x02u8; 20]),
                 choice: false,
             },
             Vote {
-                proposalId: U256::from(0),
+                proposalId: proposal_id,
                 voter: Address::from([0x03u8; 20]),
                 choice: true,
             },

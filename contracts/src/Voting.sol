@@ -1,6 +1,7 @@
 pragma solidity ^0.8.20;
 
-import {IRiscZeroVerifier} from "risc0/IRiscZeroVerifier.sol";
+import {IRiscZeroVerifier, Receipt, ReceiptClaim, ReceiptClaimLib} from "risc0/IRiscZeroVerifier.sol";
+import {IBoundlessMarketCallback} from "boundless/IBoundlessMarketCallback.sol";
 import {ImageID} from "./ImageID.sol";
 
 struct Proposal {
@@ -21,14 +22,20 @@ struct VotePublicOutput {
     uint32 no;
 }
 
-contract Voting {
+contract Voting is IBoundlessMarketCallback {
+    // boundless and risc0 specifics
+    using ReceiptClaimLib for ReceiptClaim;
+
     IRiscZeroVerifier public immutable VERIFIER;
     bytes32 public constant IMAGE_ID = ImageID.VOTING_TALLY_ID;
+
     // tracking all proposals
     uint256 public proposalCount;
 
     // mapping of proposalID to proposal
     mapping(uint256 => Proposal) public proposals;
+
+    event Proof(VotePublicOutput publicOutput);
 
     constructor(IRiscZeroVerifier _verifier) {
         VERIFIER = _verifier;
@@ -66,6 +73,7 @@ contract Voting {
 
     function requestTally(uint256 proposalId) external {}
 
+    // this is no longer needed but keeping it in here for reference
     function settleTallyManually(bytes calldata journal, bytes calldata seal) external {
         // in case the proposer wants to settle the tally manually via a manual trigger to boundless
 
@@ -78,12 +86,7 @@ contract Voting {
 
         VERIFIER.verify(seal, IMAGE_ID, sha256(journal));
 
-        /* 
-        // skipping a time check for testing purposes
-        require(
-            block.timestamp > proposals[publicOutput.proposalId].commitDeadline, "cannot tally before commit deadline"
-        );
-        */
+        // TODO: lots of checks needed here. eg that tally has not been settled yet, that the proposal exists, the deadline has passed, etc.
 
         Proposal storage p = proposals[publicOutput.proposalId];
         p.yesCount = publicOutput.yes;
@@ -100,11 +103,25 @@ contract Voting {
         return (p.tallied, p.yesCount, p.noCount, p.commitmentsDigest);
     }
 
-    // hacky way for testing live environments
-    function resetAllProposals() external {
-        for (uint256 i = 0; i < proposalCount; i++) {
-            delete proposals[i];
-        }
-        proposalCount = 0;
+    function handleProof(bytes32 imageId, bytes calldata journal, bytes calldata seal) public {
+        // require(msg.sender == BOUNDLESS_MARKET, "Invalid sender");
+        require(imageId == IMAGE_ID, "Invalid Image ID");
+
+        VotePublicOutput memory publicOutput = abi.decode(journal, (VotePublicOutput));
+
+        require(
+            publicOutput.commitmentsDigest == proposals[publicOutput.proposalId].commitmentsDigest,
+            "commitments digest mismatch"
+        );
+        VERIFIER.verify(seal, IMAGE_ID, sha256(journal));
+
+        // TODO: lots of checks needed here. eg that tally has not been settled yet, that the proposal exists, the deadline has passed, etc.
+
+        Proposal storage p = proposals[publicOutput.proposalId];
+        p.yesCount = publicOutput.yes;
+        p.noCount = publicOutput.no;
+        p.tallied = true;
+
+        emit Proof(publicOutput);
     }
 }
