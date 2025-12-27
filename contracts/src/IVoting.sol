@@ -1,11 +1,6 @@
 pragma solidity ^0.8.20;
 
 interface IVoting {
-    function requestTally(uint32 proposalId)
-        external
-        view
-        returns (uint32 proposalIndex, bytes32 commitmentsDigest, uint64 commitDeadline);
-
     function checkProposalTallyState(uint32 proposalId)
         external
         view
