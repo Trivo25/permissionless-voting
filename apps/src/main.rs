@@ -112,13 +112,6 @@ async fn main() -> Result<()> {
         RequestId::new(args.voting_contract_address, proposal_id).set_smart_contract_signed_flag();
 
     let stdin = casted_votes.abi_encode().clone();
-    let offer = OfferParams::builder()
-        .ramp_up_period(200)
-        .max_price(parse_ether("0.01")?)
-        .lock_collateral(U256::from(5u64) * U256::from(1_000_000_000_000_000_000u64))
-        .build()
-        .expect("offer params");
-
     let requirements = RequirementParams::builder()
         .callback_address(args.voting_contract_address)
         .callback_gas_limit(100_000)
@@ -132,7 +125,6 @@ async fn main() -> Result<()> {
             .with_program_url(url)?
             .with_stdin(stdin.clone())
             .with_requirements(requirements.clone())
-            .with_offer(offer.clone())
     } else {
         tracing::info!("Using built-in ELF for voting tally");
         client
@@ -141,7 +133,6 @@ async fn main() -> Result<()> {
             .with_program(VOTING_TALLY_ELF)
             .with_stdin(stdin.clone())
             .with_requirements(requirements)
-            .with_offer(offer)
     };
 
     let proof_request = client
@@ -149,9 +140,7 @@ async fn main() -> Result<()> {
         .await
         .context("failed to build proof request")?;
 
-    let signature: Bytes = (proof_request.clone(), expected_public_output)
-        .abi_encode()
-        .into();
+    let signature: Bytes = proof_request.clone().abi_encode().into();
     let (submitted_request_id, expires_at) = client
         .submit_request_onchain_with_signature(&proof_request, signature)
         .await?;

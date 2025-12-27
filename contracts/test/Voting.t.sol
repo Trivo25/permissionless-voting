@@ -5,7 +5,17 @@ import {Voting, VotePublicOutput} from "../src/Voting.sol";
 import {RiscZeroMockVerifier} from "risc0/test/RiscZeroMockVerifier.sol";
 import {Receipt as RiscZeroReceipt} from "risc0/IRiscZeroVerifier.sol";
 import {IBoundlessMarket} from "boundless/IBoundlessMarket.sol";
+import {ProofRequest} from "boundless/types/ProofRequest.sol";
+import {RequestId,RequestIdLibrary} from "boundless/types/RequestId.sol";
+import {Requirements} from "boundless/types/Requirements.sol";
+import {Callback} from "boundless/types/Callback.sol";
+import {Predicate, PredicateType} from "boundless/types/Predicate.sol";
+import {Input, InputType} from "boundless/types/Input.sol";
+import {Offer} from "boundless/types/Offer.sol";
+import {IERC1271} from "openzeppelin/contracts/interfaces/IERC1271.sol";
 import {ImageID} from "../src/ImageID.sol";
+import {PredicateLibrary} from "boundless/types/Predicate.sol";
+
 
 contract MockBoundlessMarket {
     bytes32 private immutable DOMAIN_SEPARATOR;
@@ -152,5 +162,37 @@ contract VotingTester is Test {
         vm.expectEmit(false, false, false, true, address(voting));
         emit Voting.Proof(publicOutput);
         mockBoundlessMarket.deliverProof(voting, ImageID.VOTING_TALLY_ID, journal, receipt.seal);
+    }
+
+    function test_isValidSignature_authorizes_matching_request() public {
+        uint32 proposalId = voting.createProposal(uint64(block.timestamp + 1 days));
+        (,,, bytes32 commitmentsDigest,,,,) = voting.proposals(proposalId);
+
+        VotePublicOutput memory expectedOutput = VotePublicOutput({
+            proposalId: proposalId,
+            commitmentsDigest: commitmentsDigest,
+            yes: 1,
+            no: 0
+        });
+        ProofRequest memory request = _createValidProofRequest(expectedOutput);
+
+        bytes32 digest = _requestHash(request);
+        bytes memory signature = abi.encode(request, expectedOutput);
+
+        bytes4 result = voting.isValidSignature(digest, signature);
+        assertEq(result, IERC1271.isValidSignature.selector);
+    }
+
+    function _createValidProofRequest(VotePublicOutput memory publicOutput) internal pure returns (ProofRequest memory) {
+        ProofRequest memory request;
+        request.requirements.predicate =
+            PredicateLibrary.createDigestMatchPredicate(ImageID.VOTING_TALLY_ID, sha256(abi.encodePacked(publicOutput.proposalId)));
+        request.id = RequestIdLibrary.from(address(0), publicOutput.proposalId, true);
+        return request;
+    }
+
+    function _requestHash(ProofRequest memory request) internal view returns (bytes32) {
+        bytes32 domain = mockBoundlessMarket.eip712DomainSeparator();
+        return keccak256(abi.encodePacked("\x19\x01", domain, request.eip712Digest()));
     }
 }

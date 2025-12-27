@@ -176,71 +176,38 @@ contract Voting is IBoundlessMarketCallback, IERC1271 {
         emit Proof(publicOutput);
     }
 
-    function isValidSignature(
-        bytes32 hash,
-        bytes memory signature
-    ) external view override returns (bytes4 magicValue) {
-        if (_isAuthorizedRequest(hash, signature)) {
-            return ERC1271_MAGICVALUE;
-        }
-        return 0xffffffff;
-    }
+    function isValidSignature(bytes32 hash, bytes memory signature)
+        external
+        view
+        override
+        returns (bytes4)
+    {
+        ProofRequest memory request = abi.decode(signature, (ProofRequest));
+
+        (address client, uint32 proposalId, bool smartContractSigned) = request.id.clientIndexAndSignatureType();
+        if (client != address(this) || !smartContractSigned) {
+            return 0xffffffff;
+        } 
+
+        Proposal storage proposal = proposals[proposalId];
 
 
-    function _isAuthorizedRequest(bytes32 requestHash, bytes memory signature) internal view returns (bool) {
-        (ProofRequest memory request, VotePublicOutput memory expectedOutput) =
-            abi.decode(signature, (ProofRequest, VotePublicOutput));
-
-        if (_hashTypedData(request.eip712Digest()) != requestHash) {
-            return false;
-        }
-
-        if (!request.id.isSmartContractSigned()) {
-            return false;
-        }
-
-        (address client, uint32 proposalIndex) = request.id.clientAndIndex();
-        if (client != address(this) || proposalIndex != uint32(expectedOutput.proposalId)) {
-            return false;
-        }
-
-        Proposal storage proposal = proposals[expectedOutput.proposalId];
         if (proposal.creator == address(0) || proposal.tallied) {
-            return false;
-        }
-        if (proposal.commitmentsDigest != expectedOutput.commitmentsDigest) {
-            return false;
+            return 0xffffffff;
         }
 
         if (request.requirements.callback.addr != address(this)) {
-            return false;
+            return 0xffffffff;
         }
         if (request.requirements.callback.gasLimit < MIN_CALLBACK_GAS_LIMIT) {
-            return false;
-        }
-        if (request.requirements.predicate.predicateType != PredicateType.DigestMatch) {
-            return false;
-        }
-        if (request.requirements.predicate.data.length != 64) {
-            return false;
+            return 0xffffffff;
+        } 
+
+        if (_hashTypedData(request.eip712Digest()) != hash) {
+            return 0xffffffff;
         }
 
-        bytes32 predicateImageId;
-        bytes32 predicateJournalDigest;
-        bytes memory predicateData = request.requirements.predicate.data;
-        assembly {
-            predicateImageId := mload(add(predicateData, 32))
-            predicateJournalDigest := mload(add(predicateData, 64))
-        }
-
-        if (predicateImageId != IMAGE_ID) {
-            return false;
-        }
-        if (predicateJournalDigest != sha256(abi.encode(expectedOutput))) {
-            return false;
-        }
-
-        return true;
+        return ERC1271_MAGICVALUE;
     }
 
     function _hashTypedData(bytes32 dataHash) internal view returns (bytes32) {
