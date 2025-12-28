@@ -94,45 +94,45 @@ async fn main() -> Result<()> {
         .await
         .context("failed to build boundless client")?;
 
+    // instance of the voting contract
     let voting_contract = IVoting::new(args.voting_contract_address, client.provider().clone());
 
+    // create new proposal
     let proposal_id = create_new_proposal(&client, &voting_contract).await?;
 
+    // prepare and cast votes
     let casted_votes = prepare_and_cast_votes(&client, &voting_contract, proposal_id).await?;
 
-    let initial_proposal_metadata = get_proposal_meta_data(&voting_contract, proposal_id).await?;
-
-    let expected_public_output = build_expected_public_output(
-        proposal_id,
-        initial_proposal_metadata.commitmentsDigest,
-        &casted_votes,
-    )?;
-
+    // build request id using the proposal_id as nonce/index
     let request_id =
         RequestId::new(args.voting_contract_address, proposal_id).set_smart_contract_signed_flag();
 
+    // prepares the proof request using the list of all casted votes as input to the prover
     let stdin = casted_votes.abi_encode().clone();
-    let requirements = RequirementParams::builder()
-        .callback_address(args.voting_contract_address)
-        .callback_gas_limit(100_000)
-        .build()
-        .expect("requirements");
+
+    // specifies the callback address for boundless to call once request has been fulfilled
+    let requirements = build_requirement_params(args.voting_contract_address)?;
+    // specifies the offer parameters for the proof request, not needed but was playing around with it
+    let offer_params = build_offer_params()?;
+
     let base_request = if let Some(url) = program_url {
         tracing::info!("Using program URL: {}", url);
         client
             .new_request()
             .with_request_id(request_id)
             .with_program_url(url)?
-            .with_stdin(stdin.clone())
-            .with_requirements(requirements.clone())
+            .with_stdin(stdin)
+            .with_requirements(requirements)
+            .with_offer(offer_params)
     } else {
         tracing::info!("Using built-in ELF for voting tally");
         client
             .new_request()
             .with_request_id(request_id)
             .with_program(VOTING_TALLY_ELF)
-            .with_stdin(stdin.clone())
+            .with_stdin(stdin)
             .with_requirements(requirements)
+            .with_offer(offer_params)
     };
 
     let proof_request = client
@@ -140,15 +140,16 @@ async fn main() -> Result<()> {
         .await
         .context("failed to build proof request")?;
 
+    // calculates the signature for smart contract authorization
     let signature: Bytes = proof_request.clone().abi_encode().into();
     let (submitted_request_id, expires_at) = client
         .submit_request_onchain_with_signature(&proof_request, signature)
         .await?;
 
-    let (_journal_bytes, _fulfillment) =
-        request_boundless_proof(&client, submitted_request_id, expires_at)
-            .await
-            .context("failed to get proof fulfilment from Boundless Market")?;
+    // requests the actual proof via boundless
+    request_boundless_proof(&client, submitted_request_id, expires_at)
+        .await
+        .context("failed to get proof fulfilment from Boundless Market")?;
 
     // query state of contract and proposal to check if the tally was completed
     let proposal_meta_data = get_proposal_meta_data(&voting_contract, proposal_id).await?;
@@ -160,6 +161,10 @@ async fn main() -> Result<()> {
         proposal_meta_data.yesCount,
         proposal_meta_data.noCount
     );
+
+    if !proposal_meta_data.tallied {
+        bail!("proposal tally was not completed onchain");
+    }
 
     Ok(())
 }
@@ -205,7 +210,7 @@ async fn cast_vote(
     voting_contract: &IVotingInstance<alloy::providers::DynProvider>,
     vote: &Vote,
 ) -> Result<()> {
-    let commitment = keccak256((vote.voter.clone(), vote.choice, vote.proposalId).abi_encode());
+    let commitment = keccak256((vote.voter, vote.choice, vote.proposalId).abi_encode());
     let call_cast_vote = voting_contract
         .castVote(vote.proposalId, commitment)
         .from(client.caller());
@@ -222,7 +227,7 @@ async fn cast_vote(
         .await
         .context("failed to confirm tx")?;
     tracing::info!("Tx {:?} confirmed", tx_hash);
-    return Ok(());
+    Ok(())
 }
 
 async fn get_proposal_meta_data(
@@ -264,34 +269,13 @@ async fn prepare_and_cast_votes(
         ],
     };
 
-    tracing::info!("Casting vote");
-
-    cast_vote(&client, &voting_contract, &votes.votes[0]).await?;
-    cast_vote(&client, &voting_contract, &votes.votes[1]).await?;
-    cast_vote(&client, &voting_contract, &votes.votes[2]).await?;
-
-    tracing::info!("Casted all votes");
+    tracing::info!("Casting {} votes", votes.votes.len());
+    for vote in &votes.votes {
+        cast_vote(client, voting_contract, vote).await?;
+    }
+    tracing::info!("All votes committed");
 
     Ok(votes)
-}
-
-fn build_expected_public_output(
-    proposal_id: u32,
-    commitments_digest: B256,
-    witness: &VoteWitness,
-) -> Result<VotePublicOutput> {
-    let yes_votes = witness.votes.iter().filter(|vote| vote.choice).count();
-    let no_votes = witness.votes.len().saturating_sub(yes_votes);
-
-    let yes = u32::try_from(yes_votes).map_err(|_| anyhow!("too many yes votes for u32"))?;
-    let no = u32::try_from(no_votes).map_err(|_| anyhow!("too many no votes for u32"))?;
-
-    Ok(VotePublicOutput {
-        proposalId: proposal_id,
-        commitmentsDigest: commitments_digest,
-        yes,
-        no,
-    })
 }
 
 async fn request_boundless_proof(
@@ -310,7 +294,9 @@ async fn request_boundless_proof(
     tracing::info!("Request {:x} fulfilled", request_id);
 
     let fulfillment_data = fulfillment.data()?;
-    let journal_bytes = fulfillment_data.journal().unwrap();
+    let journal_bytes = fulfillment_data
+        .journal()
+        .context("fulfillment response missing journal bytes")?;
 
     let journal = VotePublicOutput::abi_decode(journal_bytes)
         .context("failed to decode journal from fulfillment data")?;
@@ -318,4 +304,21 @@ async fn request_boundless_proof(
     tracing::info!("Received proof with journal {:?}", journal);
 
     Ok((journal_bytes.clone(), fulfillment))
+}
+
+fn build_offer_params() -> Result<OfferParams> {
+    Ok(OfferParams::builder()
+        .ramp_up_period(200)
+        .max_price(parse_ether("0.01")?)
+        .lock_collateral(U256::from(5u64) * U256::from(1_000_000_000_000_000_000u64))
+        .build()
+        .expect("offer params"))
+}
+
+fn build_requirement_params(callback_address: Address) -> Result<RequirementParams> {
+    Ok(RequirementParams::builder()
+        .callback_address(callback_address)
+        .callback_gas_limit(100_000)
+        .build()
+        .expect("requirements"))
 }

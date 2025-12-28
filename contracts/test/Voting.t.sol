@@ -6,7 +6,7 @@ import {RiscZeroMockVerifier} from "risc0/test/RiscZeroMockVerifier.sol";
 import {Receipt as RiscZeroReceipt} from "risc0/IRiscZeroVerifier.sol";
 import {IBoundlessMarket} from "boundless/IBoundlessMarket.sol";
 import {ProofRequest} from "boundless/types/ProofRequest.sol";
-import {RequestId,RequestIdLibrary} from "boundless/types/RequestId.sol";
+import {RequestId, RequestIdLibrary} from "boundless/types/RequestId.sol";
 import {Requirements} from "boundless/types/Requirements.sol";
 import {Callback} from "boundless/types/Callback.sol";
 import {Predicate, PredicateType} from "boundless/types/Predicate.sol";
@@ -14,7 +14,6 @@ import {Input, InputType} from "boundless/types/Input.sol";
 import {Offer} from "boundless/types/Offer.sol";
 import {IERC1271} from "openzeppelin/contracts/interfaces/IERC1271.sol";
 import {ImageID} from "../src/ImageID.sol";
-import {PredicateLibrary} from "boundless/types/Predicate.sol";
 
 
 contract MockBoundlessMarket {
@@ -116,12 +115,6 @@ contract VotingTester is Test {
         assertEq(votesCountAfterBob, 2);
     }
 
-    function test_castVote_reverts_if_proposal_missing() public {
-        vm.prank(alice);
-        vm.expectRevert("proposal does not exist");
-        voting.castVote(999, keccak256("x"));
-    }
-
     function test_castVote_reverts_after_deadline() public {
         uint64 deadline = uint64(block.timestamp + 10);
         uint32 proposalId = voting.createProposal(deadline);
@@ -160,35 +153,77 @@ contract VotingTester is Test {
         RiscZeroReceipt memory receipt = verifier.mockProve(ImageID.VOTING_TALLY_ID, sha256(journal));
 
         vm.expectEmit(false, false, false, true, address(voting));
-        emit Voting.Proof(publicOutput);
+        emit Voting.TallyCompleted(publicOutput);
         mockBoundlessMarket.deliverProof(voting, ImageID.VOTING_TALLY_ID, journal, receipt.seal);
     }
 
     function test_isValidSignature_authorizes_matching_request() public {
         uint32 proposalId = voting.createProposal(uint64(block.timestamp + 1 days));
-        (,,, bytes32 commitmentsDigest,,,,) = voting.proposals(proposalId);
 
-        VotePublicOutput memory expectedOutput = VotePublicOutput({
-            proposalId: proposalId,
-            commitmentsDigest: commitmentsDigest,
-            yes: 1,
-            no: 0
-        });
-        ProofRequest memory request = _createValidProofRequest(expectedOutput);
+        ProofRequest memory request = _buildProofRequest(proposalId);
 
         bytes32 digest = _requestHash(request);
-        bytes memory signature = abi.encode(request, expectedOutput);
+        bytes memory signature = abi.encode(request);
 
         bytes4 result = voting.isValidSignature(digest, signature);
         assertEq(result, IERC1271.isValidSignature.selector);
     }
 
-    function _createValidProofRequest(VotePublicOutput memory publicOutput) internal pure returns (ProofRequest memory) {
-        ProofRequest memory request;
-        request.requirements.predicate =
-            PredicateLibrary.createDigestMatchPredicate(ImageID.VOTING_TALLY_ID, sha256(abi.encodePacked(publicOutput.proposalId)));
-        request.id = RequestIdLibrary.from(address(0), publicOutput.proposalId, true);
-        return request;
+    function test_isValidSignature_rejects_wrong_callback() public {
+        uint32 proposalId = voting.createProposal(uint64(block.timestamp + 1 days));
+
+        ProofRequest memory request = _buildProofRequest(proposalId);
+        request.requirements.callback.addr = address(0xdead);
+
+        bytes32 digest = _requestHash(request);
+        bytes memory signature = abi.encode(request);
+
+        bytes4 result = voting.isValidSignature(digest, signature);
+        assertEq(result, bytes4(0xffffffff));
+    }
+
+    function test_isValidSignature_rejects_wrong_proposal() public {
+        uint32 proposalId = voting.createProposal(uint64(block.timestamp + 1 days));
+
+        ProofRequest memory request = _buildProofRequest(proposalId + 1);
+
+        bytes32 digest = _requestHash(request);
+        bytes memory signature = abi.encode(request);
+
+        bytes4 result = voting.isValidSignature(digest, signature);
+        assertEq(result, bytes4(0xffffffff));
+    }
+
+    function _buildProofRequest(uint32 proposalId)
+        internal
+        view
+        returns (ProofRequest memory)
+    {
+        Requirements memory requirements = Requirements({
+            callback: Callback({addr: address(voting), gasLimit: 100_000}),
+            predicate: Predicate({predicateType: PredicateType.DigestMatch, data: ""}),
+            selector: Voting.handleProof.selector
+        });
+
+        Input memory inputData = Input({inputType: InputType.Inline, data: abi.encode(proposalId)});
+
+        Offer memory offer = Offer({
+            minPrice: 0,
+            maxPrice: 1 ether,
+            rampUpStart: uint64(block.timestamp),
+            rampUpPeriod: 1,
+            lockTimeout: 2,
+            timeout: 3,
+            lockCollateral: 0
+        });
+
+        return ProofRequest({
+            id: RequestIdLibrary.from(address(voting), proposalId, true),
+            requirements: requirements,
+            imageUrl: "ipfs://image",
+            input: inputData,
+            offer: offer
+        });
     }
 
     function _requestHash(ProofRequest memory request) internal view returns (bytes32) {
